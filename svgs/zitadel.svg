@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Background with ZITADEL's dark navy brand color -->
+  <rect width="120" height="120" rx="24" fill="#080522"/>
+
+  <!-- ZITADEL Z mark  bold geometric Z shape -->
+  <!-- Top bar of the Z -->
+  <rect x="22" y="24" width="76" height="14" rx="4" fill="#FF6929"/>
+  <!-- Diagonal slash of the Z -->
+  <path d="M85 38 L35 82" stroke="#FF6929" stroke-width="14" stroke-linecap="square"/>
+  <!-- Bottom bar of the Z -->
+  <rect x="22" y="82" width="76" height="14" rx="4" fill="#FF6929"/>
+
+  <!-- White highlight accent on top bar -->
+  <rect x="22" y="24" width="30" height="4" rx="2" fill="white" opacity="0.25"/>
+</svg>

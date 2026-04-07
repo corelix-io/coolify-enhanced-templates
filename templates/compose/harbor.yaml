@@ -1,0 +1,609 @@
+# documentation: https://goharbor.io/docs/
+# slogan: Cloud native registry for storing, signing, and scanning container images and Helm charts.
+# tags: registry,container,docker,helm,oci,devops,security,artifact-registry,harbor
+# category: devops
+# logo: svgs/harbor.svg
+# port: 8080
+# author: @amirhmoradi
+# repository: https://github.com/amirhmoradi/coolify-enhanced-templates
+
+# NOTES:
+# - Harbor takes 2–3 minutes on first start while it generates keys and runs database migrations.
+# - Access Harbor at your service URL. Admin username is "admin"; set HARBOR_ADMIN_PASSWORD below.
+# - To push/pull images:  docker login <your-harbor-url>
+# - EXT_ENDPOINT is wired automatically from your Coolify service URL. If you change your domain,
+#   update it in Harbor's Admin Panel → Administration → Configuration → Registry URL.
+# - Vulnerability scanning (Trivy) is not enabled by default. See the Harbor docs to add it.
+# - Image upload size is unlimited (client_max_body_size 0 in nginx). Restrict in nginx config if needed.
+# - No syslog container: Harbor services write logs to stdout; collect via Docker/Coolify log viewer.
+
+services:
+
+  # ─── Init Container ───────────────────────────────────────────────────────────
+  # Runs once at startup to:
+  #   1. Generate the RSA key pair used by Harbor's token service
+  #   2. Generate the AES encryption key used by Harbor's core
+  #   3. Create the registry htpasswd file (bcrypt-hashed internal credential)
+  #   4. Create required directory structure inside the named volumes
+  init:
+    image: alpine:3.21
+    command: >
+      sh -c "
+      set -e &&
+      echo '[Harbor Init] Installing tools...' &&
+      apk add --no-cache apache2-utils &&
+      echo '[Harbor Init] Creating directory structure...' &&
+      mkdir -p /etc/core/certificates &&
+      mkdir -p /etc/registry &&
+      mkdir -p /data/ca_download &&
+      echo '[Harbor Init] Generating RSA key pair for Harbor token service (this may take ~30s)...' &&
+      openssl req -newkey rsa:4096 -nodes -sha256
+        -keyout /etc/core/private_key.pem
+        -x509 -days 3650
+        -out /etc/registry/root.crt
+        -subj '/C=US/ST=Harbor/L=Harbor/O=Harbor/CN=Harbor-Token-Issuer' &&
+      echo '[Harbor Init] Generating AES encryption key...' &&
+      openssl rand -hex 8 > /etc/core/key &&
+      echo '[Harbor Init] Generating registry password file...' &&
+      htpasswd -nbB $$REGISTRY_CREDENTIAL_USERNAME $$REGISTRY_CREDENTIAL_PASSWORD > /etc/registry/passwd &&
+      echo '[Harbor Init] Initialization complete!'
+      "
+    environment:
+      REGISTRY_CREDENTIAL_USERNAME: harbor_registry_user
+      REGISTRY_CREDENTIAL_PASSWORD: $SERVICE_PASSWORD_REGISTRYCRED
+    volumes:
+      - harbor-core-certs:/etc/core
+      - harbor-registry-etc:/etc/registry
+      - harbor-data:/data
+    restart: "no"
+    exclude_from_hc: true
+
+  # ─── PostgreSQL (Harbor bundled image) ────────────────────────────────────────
+  postgresql:
+    image: goharbor/harbor-db:v2.15.0
+    environment:
+      POSTGRES_PASSWORD: $SERVICE_PASSWORD_POSTGRES
+    volumes:
+      - harbor-db-data:/var/lib/postgresql/data
+    shm_size: '256m'
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "registry"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  # ─── Redis (Harbor bundled image) ─────────────────────────────────────────────
+  redis:
+    image: goharbor/redis-photon:v2.15.0
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    volumes:
+      - harbor-redis-data:/var/lib/redis
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ─── OCI Distribution Registry ────────────────────────────────────────────────
+  registry:
+    image: goharbor/registry-photon:v2.15.0
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    volumes:
+      - harbor-registry-storage:/storage
+      # Named volume populated by init (root.crt + passwd)
+      - harbor-registry-etc:/etc/registry
+      # Inline config overlays the named volume at this specific path
+      - type: bind
+        source: ./registry-config.yml
+        target: /etc/registry/config.yml
+        content: |
+          version: 0.1
+          log:
+            level: info
+            fields:
+              service: registry
+          storage:
+            cache:
+              layerinfo: redis
+            filesystem:
+              rootdirectory: /storage
+            maintenance:
+              uploadpurging:
+                enabled: false
+              delete:
+                enabled: true
+          redis:
+            addr: redis:6379
+            readtimeout: 10s
+            writetimeout: 10s
+            dialtimeout: 10s
+            db: 1
+            pool:
+              maxidle: 100
+              maxactive: 500
+              idletimeout: 60s
+          http:
+            addr: :5000
+            secret: placeholder
+            debug:
+              addr: localhost:5001
+          auth:
+            htpasswd:
+              realm: harbor-registry-basic-realm
+              path: /etc/registry/passwd
+          validation:
+            disabled: true
+          compatibility:
+            schema1:
+              enabled: true
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:5000/v2/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ─── Registry Controller (blob GC, replication) ───────────────────────────────
+  registryctl:
+    image: goharbor/harbor-registryctl:v2.15.0
+    environment:
+      CORE_SECRET: $SERVICE_PASSWORD_64_CORESECRET
+      JOBSERVICE_SECRET: $SERVICE_PASSWORD_64_JOBSECRET
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    volumes:
+      - harbor-registry-storage:/storage
+      - harbor-registry-etc:/etc/registry
+      - type: bind
+        source: ./registry-config.yml
+        target: /etc/registry/config.yml
+        content: |
+          version: 0.1
+          log:
+            level: info
+            fields:
+              service: registry
+          storage:
+            cache:
+              layerinfo: redis
+            filesystem:
+              rootdirectory: /storage
+            maintenance:
+              uploadpurging:
+                enabled: false
+              delete:
+                enabled: true
+          redis:
+            addr: redis:6379
+            readtimeout: 10s
+            writetimeout: 10s
+            dialtimeout: 10s
+            db: 1
+            pool:
+              maxidle: 100
+              maxactive: 500
+              idletimeout: 60s
+          http:
+            addr: :5000
+            secret: placeholder
+            debug:
+              addr: localhost:5001
+          auth:
+            htpasswd:
+              realm: harbor-registry-basic-realm
+              path: /etc/registry/passwd
+          validation:
+            disabled: true
+          compatibility:
+            schema1:
+              enabled: true
+      - type: bind
+        source: ./registryctl-config.yml
+        target: /etc/registryctl/config.yml
+        content: |
+          protocol: "http"
+          port: 8080
+          log_level: info
+          registry_config: "/etc/registry/config.yml"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/api/registry/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ─── Harbor Core (API, auth, token service, quota) ────────────────────────────
+  core:
+    image: goharbor/harbor-core:v2.15.0
+    environment:
+      - CONFIG_PATH=/etc/core/app.conf
+      # EXT_ENDPOINT: auto-set from your Coolify service URL. Update in Harbor Admin Panel if domain changes.
+      - EXT_ENDPOINT=$SERVICE_URL_HARBOR
+      # Database
+      - DATABASE_TYPE=postgresql
+      - POSTGRESQL_HOST=postgresql
+      - POSTGRESQL_PORT=5432
+      - POSTGRESQL_USERNAME=postgres
+      - POSTGRESQL_PASSWORD=$SERVICE_PASSWORD_POSTGRES
+      - POSTGRESQL_DATABASE=registry
+      - POSTGRESQL_SSLMODE=disable
+      - POSTGRESQL_MAX_IDLE_CONNS=100
+      - POSTGRESQL_MAX_OPEN_CONNS=900
+      - POSTGRESQL_CONN_MAX_LIFETIME=5m
+      - POSTGRESQL_CONN_MAX_IDLE_TIME=0
+      # Internal service URLs
+      - REGISTRY_URL=http://registry:5000
+      - PORTAL_URL=http://portal:8080
+      - TOKEN_SERVICE_URL=http://core:8080/service/token
+      - CORE_URL=http://core:8080
+      - CORE_LOCAL_URL=http://127.0.0.1:8080
+      - JOBSERVICE_URL=http://jobservice:8080
+      - REGISTRY_CONTROLLER_URL=http://registryctl:8080
+      # Admin password — required, set before first deploy
+      - HARBOR_ADMIN_PASSWORD=${HARBOR_ADMIN_PASSWORD:?Please set HARBOR_ADMIN_PASSWORD}
+      # Shared secrets (auto-generated by Coolify)
+      - CORE_SECRET=$SERVICE_PASSWORD_64_CORESECRET
+      - JOBSERVICE_SECRET=$SERVICE_PASSWORD_64_JOBSECRET
+      - CSRF_KEY=$SERVICE_PASSWORD_64_CSRFKEY
+      # Registry internal credential (auto-generated)
+      - REGISTRY_CREDENTIAL_USERNAME=harbor_registry_user
+      - REGISTRY_CREDENTIAL_PASSWORD=$SERVICE_PASSWORD_REGISTRYCRED
+      # Redis
+      - _REDIS_URL_CORE=redis://redis:6379?idle_timeout_seconds=30
+      - _REDIS_URL_REG=redis://redis:6379/1?idle_timeout_seconds=30
+      # Feature flags
+      - WITH_TRIVY=False
+      - SYNC_QUOTA=true
+      - READ_ONLY=false
+      - REGISTRY_STORAGE_PROVIDER_NAME=filesystem
+      - QUOTA_UPDATE_PROVIDER=db
+      - MAX_JOB_WORKERS=${MAX_JOB_WORKERS:-10}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - PORT=8080
+      # Proxy cache supported registry types
+      - PERMITTED_REGISTRY_TYPES_FOR_PROXY_CACHE=docker-hub,harbor,azure-acr,ali-acr,aws-ecr,google-gcr,quay,docker-registry,github-ghcr,jfrog-artifactory
+      # Proxy settings (leave empty to disable)
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=registryctl,redis,core,localhost,postgresql,jobservice,registry,portal,127.0.0.1,.local,.internal
+      # UAA (optional OIDC provider — leave as-is if not using UAA)
+      - UAA_CA_ROOT=/etc/core/certificates/uaa_ca.pem
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    volumes:
+      # Named volume with private_key.pem + key (secretkey) written by init
+      - harbor-core-certs:/etc/core
+      # Harbor data directory (ca_download, etc.)
+      - harbor-data:/data
+      # Inline app.conf overlays the named volume at /etc/core/app.conf
+      - type: bind
+        source: ./core-app.conf
+        target: /etc/core/app.conf
+        content: |
+          appname = Harbor
+          runmode = prod
+          enablegzip = true
+          [prod]
+          httpport = 8080
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v2.0/ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  # ─── Harbor Portal (Angular UI served by nginx) ───────────────────────────────
+  portal:
+    image: goharbor/harbor-portal:v2.15.0
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    depends_on:
+      core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── Job Service (replication, GC, webhook jobs) ──────────────────────────────
+  jobservice:
+    image: goharbor/harbor-jobservice:v2.15.0
+    environment:
+      - CORE_SECRET=$SERVICE_PASSWORD_64_CORESECRET
+      - JOBSERVICE_SECRET=$SERVICE_PASSWORD_64_JOBSECRET
+      - CORE_URL=http://core:8080
+      - REGISTRY_URL=http://registry:5000
+      - REGISTRY_CONTROLLER_URL=http://registryctl:8080
+      - REGISTRY_CREDENTIAL_USERNAME=harbor_registry_user
+      - REGISTRY_CREDENTIAL_PASSWORD=$SERVICE_PASSWORD_REGISTRYCRED
+      - JOBSERVICE_WEBHOOK_JOB_MAX_RETRY=3
+      - JOBSERVICE_WEBHOOK_JOB_HTTP_CLIENT_TIMEOUT=3
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=registryctl,redis,core,localhost,postgresql,jobservice,registry,portal,127.0.0.1,.local,.internal
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    volumes:
+      - harbor-job-logs:/var/log/jobs
+      - type: bind
+        source: ./jobservice-config.yml
+        target: /etc/jobservice/config.yml
+        content: |
+          ---
+          protocol: "http"
+          port: 8080
+
+          worker_pool:
+            workers: 10
+            backend: "redis"
+            redis_pool:
+              redis_url: "redis://redis:6379/2"
+              namespace: "harbor_job_service_namespace"
+              idle_timeout_second: 3600
+
+          job_loggers:
+            - name: "FILE"
+              level: "INFO"
+              settings:
+                base_dir: "/var/log/jobs"
+              sweeper:
+                duration: 14
+                settings:
+                  work_dir: "/var/log/jobs"
+            - name: "STD_OUTPUT"
+              level: "INFO"
+
+          loggers:
+            - name: "STD_OUTPUT"
+              level: "INFO"
+
+          reaper:
+            max_update_hours: 24
+            max_dangling_hours: 168
+
+          max_retrieve_size_mb: 10
+    depends_on:
+      core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/stats"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── Nginx Reverse Proxy (Harbor front-door) ──────────────────────────────────
+  # This is the only service exposed to Coolify's proxy. It routes:
+  #   /           → portal (Angular UI)
+  #   /api/       → core (REST API)
+  #   /c/         → core (chart museum)
+  #   /v2/        → core (OCI distribution — docker push/pull)
+  #   /service/   → core (token service, replication)
+  proxy:
+    image: goharbor/nginx-photon:v2.15.0
+    environment:
+      - SERVICE_FQDN_HARBOR_8080
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    volumes:
+      - type: bind
+        source: ./nginx-harbor.conf
+        target: /etc/nginx/nginx.conf
+        content: |
+          worker_processes auto;
+          pid /tmp/nginx.pid;
+
+          events {
+            worker_connections 3096;
+            use epoll;
+            multi_accept on;
+          }
+
+          http {
+            client_body_temp_path /tmp/client_body_temp;
+            proxy_temp_path /tmp/proxy_temp;
+            fastcgi_temp_path /tmp/fastcgi_temp;
+            uwsgi_temp_path /tmp/uwsgi_temp;
+            scgi_temp_path /tmp/scgi_temp;
+
+            tcp_nodelay on;
+            proxy_http_version 1.1;
+
+            include /etc/nginx/mime.types;
+
+            upstream core {
+              server core:8080;
+            }
+
+            upstream portal {
+              server portal:8080;
+            }
+
+            log_format timed_combined '$remote_addr - '
+              '"$request" $status $body_bytes_sent '
+              '"$http_referer" "$http_user_agent" '
+              '$request_time $upstream_response_time $pipe';
+
+            access_log /dev/stdout timed_combined;
+
+            map $http_x_forwarded_proto $x_forwarded_proto {
+              default $http_x_forwarded_proto;
+              "" $scheme;
+            }
+
+            server {
+              listen 8080;
+              server_tokens off;
+
+              # Disable body size limit to allow large image uploads (multi-GB layers)
+              client_max_body_size 0;
+
+              add_header X-Frame-Options DENY;
+              add_header Content-Security-Policy "frame-ancestors 'none'";
+
+              # Portal (Angular UI)
+              location / {
+                proxy_pass http://portal/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $x_forwarded_proto;
+                proxy_buffering off;
+                proxy_request_buffering off;
+              }
+
+              # Core: Chart Museum
+              location /c/ {
+                proxy_pass http://core/c/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $x_forwarded_proto;
+                proxy_buffering off;
+                proxy_request_buffering off;
+                proxy_send_timeout 900;
+                proxy_read_timeout 900;
+              }
+
+              # Core: REST API
+              location /api/ {
+                proxy_pass http://core/api/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $x_forwarded_proto;
+                proxy_buffering off;
+                proxy_request_buffering off;
+              }
+
+              # OCI v1 registry — not used by Harbor, return 404
+              location /v1/ {
+                return 404;
+              }
+
+              # OCI v2 registry (docker push/pull goes here)
+              location /v2/ {
+                proxy_pass http://core/v2/;
+                proxy_set_header Host $http_host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $x_forwarded_proto;
+                proxy_buffering off;
+                proxy_request_buffering off;
+                proxy_send_timeout 900;
+                proxy_read_timeout 900;
+              }
+
+              # Core: Token service and replication
+              location /service/ {
+                proxy_pass http://core/service/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $x_forwarded_proto;
+                proxy_buffering off;
+                proxy_request_buffering off;
+              }
+
+              # Webhook notifications from registry → core are internal; block external access
+              location /service/notifications {
+                return 404;
+              }
+            }
+          }
+    depends_on:
+      portal:
+        condition: service_healthy
+      core:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  # Harbor core keys (private_key.pem + secretkey written by init, mounted at /etc/core/)
+  harbor-core-certs:
+  # Harbor general data directory (ca_download/, etc.)
+  harbor-data:
+  # PostgreSQL database (Harbor schema auto-created on first start)
+  harbor-db-data:
+  # Redis session/cache data
+  harbor-redis-data:
+  # OCI layer storage (the actual image blobs)
+  harbor-registry-storage:
+  # Registry config dir (root.crt + passwd written by init, config.yml overlaid by bind mount)
+  harbor-registry-etc:
+  # Job service log files
+  harbor-job-logs:

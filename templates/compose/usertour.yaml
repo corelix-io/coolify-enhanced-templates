@@ -1,0 +1,91 @@
+# documentation: https://docs.usertour.io/open-source/self-hosting
+# slogan: User onboarding platform for product tours, checklists, and surveys.
+# tags: onboarding,product-tours,user-experience,surveys,checklists,ux,self-hosted
+# category: productivity
+# logo: svgs/usertour.svg
+# port: 80
+# author: @amirhmoradi
+# repository: https://github.com/amirhmoradi/coolify-enhanced-templates
+
+services:
+  usertour:
+    image: usertour/usertour:0.6.0
+    environment:
+      - SERVICE_FQDN_USERTOUR_80
+      - DATABASE_URL=postgresql://${SERVICE_USER_POSTGRES}:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/${POSTGRES_DB:-usertour}?schema=usertour&sslmode=prefer
+      - DATABASE_DIRECT_URL=postgresql://${SERVICE_USER_POSTGRES}:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/${POSTGRES_DB:-usertour}?schema=usertour&sslmode=prefer
+      - NEST_SERVER_PORT=3000
+      - Redis_HOST=redis
+      - Redis_PORT=6379
+      - APP_HOMEPAGE_URL=${SERVICE_URL_USERTOUR}
+      - NODE_ENV=${NODE_ENV:-production}
+      - JWT_SECRET=$SERVICE_PASSWORD_64_JWT
+      - JWT_EXPIRATION_TIME=${JWT_EXPIRATION_TIME:-1h}
+      - JWT_REFRESH_EXPIRATION_TIME=${JWT_REFRESH_EXPIRATION_TIME:-7d}
+      - LOGIN_REDIRECT_URL=${LOGIN_REDIRECT_URL:-/env/1/flows}
+      - EMAIL_AUTH_ENABLED=${EMAIL_AUTH_ENABLED:-true}
+      - EMAIL_SENDER=${EMAIL_SENDER:-Usertour <support@example.com>}
+      - EMAIL_HOST=${EMAIL_HOST}
+      - EMAIL_PORT=${EMAIL_PORT}
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_PASS=${EMAIL_PASS}
+      - GITHUB_AUTH_ENABLED=${GITHUB_AUTH_ENABLED:-false}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - GITHUB_CALLBACK_URL=${SERVICE_URL_USERTOUR}/api/auth/github/callback
+      - GOOGLE_AUTH_ENABLED=${GOOGLE_AUTH_ENABLED:-false}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_CALLBACK_URL=${SERVICE_URL_USERTOUR}/api/auth/google/callback
+      - USERTOUR_COOKIE_DOMAIN=${USERTOUR_COOKIE_DOMAIN}
+      - USERTOUR_COOKIE_SECURE=${USERTOUR_COOKIE_SECURE:-true}
+      - AWS_S3_REGION=${AWS_S3_REGION}
+      - AWS_S3_ENDPOINT=${AWS_S3_ENDPOINT}
+      - AWS_S3_ACCESS_KEY_ID=${AWS_S3_ACCESS_KEY_ID}
+      - AWS_S3_SECRET_ACCESS_KEY=${AWS_S3_SECRET_ACCESS_KEY}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - AWS_S3_DOMAIN=${AWS_S3_DOMAIN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${SERVICE_USER_POSTGRES}
+      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES}
+      - POSTGRES_DB=${POSTGRES_DB:-usertour}
+    volumes:
+      - usertour-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - usertour-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  usertour-postgres-data:
+  usertour-redis-data:

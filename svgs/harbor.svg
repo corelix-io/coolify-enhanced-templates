@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <!-- Harbor logo: stylized lighthouse/beacon over water waves -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a4f7a"/>
+      <stop offset="100%" stop-color="#2980b9"/>
+    </linearGradient>
+    <linearGradient id="lighthouse" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8f4f8"/>
+      <stop offset="100%" stop-color="#bde3f0"/>
+    </linearGradient>
+    <linearGradient id="beacon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f9d849"/>
+      <stop offset="100%" stop-color="#f39c12"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="100" fill="url(#sky)"/>
+
+  <!-- Water waves -->
+  <ellipse cx="100" cy="155" rx="80" ry="12" fill="#1a6fa0" opacity="0.7"/>
+  <path d="M20 150 Q50 140 80 150 Q110 160 140 150 Q170 140 180 148 L180 170 Q150 175 120 165 Q90 155 60 165 Q30 175 20 168 Z" fill="#0d4f6e" opacity="0.8"/>
+  <path d="M20 162 Q55 155 90 162 Q125 170 160 162 L160 178 Q125 183 90 175 Q55 167 20 175 Z" fill="#0a3d56" opacity="0.9"/>
+
+  <!-- Lighthouse tower -->
+  <rect x="86" y="75" width="28" height="75" rx="3" fill="url(#lighthouse)"/>
+  <!-- Red stripes on lighthouse -->
+  <rect x="86" y="87" width="28" height="10" fill="#e74c3c" opacity="0.85"/>
+  <rect x="86" y="107" width="28" height="10" fill="#e74c3c" opacity="0.85"/>
+  <rect x="86" y="127" width="28" height="10" fill="#e74c3c" opacity="0.85"/>
+
+  <!-- Lighthouse base platform -->
+  <rect x="78" y="148" width="44" height="8" rx="2" fill="#c8dde8"/>
+
+  <!-- Lamp room (lantern house) -->
+  <rect x="82" y="58" width="36" height="20" rx="4" fill="#2c3e50"/>
+  <!-- Glass panes -->
+  <rect x="85" y="61" width="10" height="14" rx="1" fill="#7ecef4" opacity="0.9"/>
+  <rect x="97" y="61" width="10" height="14" rx="1" fill="#7ecef4" opacity="0.9"/>
+  <rect x="109" y="61" width="6" height="14" rx="1" fill="#7ecef4" opacity="0.9"/>
+
+  <!-- Beacon light glow -->
+  <circle cx="100" cy="68" r="8" fill="url(#beacon)" opacity="0.95"/>
+  <!-- Light rays -->
+  <g opacity="0.55" stroke="#f9d849" stroke-width="2">
+    <line x1="100" y1="68" x2="60" y2="45"/>
+    <line x1="100" y1="68" x2="140" y2="45"/>
+    <line x1="100" y1="68" x2="48" y2="68"/>
+    <line x1="100" y1="68" x2="152" y2="68"/>
+    <line x1="100" y1="68" x2="65" y2="35"/>
+    <line x1="100" y1="68" x2="135" y2="35"/>
+  </g>
+
+  <!-- Roof cap -->
+  <polygon points="80,58 100,42 120,58" fill="#1a2a3a"/>
+
+  <!-- Antenna/flagpole -->
+  <line x1="100" y1="42" x2="100" y2="28" stroke="#2c3e50" stroke-width="3" stroke-linecap="round"/>
+  <!-- Flag -->
+  <polygon points="100,28 120,33 100,38" fill="#e74c3c"/>
+</svg>
