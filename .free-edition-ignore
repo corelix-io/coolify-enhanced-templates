@@ -1,0 +1,21 @@
+# Files excluded from the free (community) edition build.
+# One path per line, relative to the repository root.
+# Supports glob patterns.
+#
+# Premium template YAML files are stripped by the build script
+# (any file with "# tier: premium" in its header is deleted).
+# List premium-only SVG logos here so they don't become orphans.
+#
+# PREMIUM.md is intentionally kept — it serves as the catalog
+# for users to see what premium templates are available.
+
+# --- Premium-only SVG logos ---
+svgs/paperclip.svg
+
+# --- Internal / maintainer files ---
+.claude/
+.cursor/
+.github/
+docs/template-sources/
+AGENTS.md
+scripts/

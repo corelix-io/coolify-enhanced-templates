@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Background circle with Lago's indigo brand color -->
+  <circle cx="60" cy="60" r="60" fill="#1B1055"/>
+
+  <!-- Stylized wave motif  Lago's signature mark -->
+  <path d="M22 72 Q35 58 48 68 Q61 78 74 64 Q87 50 98 60"
+        stroke="#7C6AF7" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M22 82 Q35 68 48 78 Q61 88 74 74 Q87 60 98 70"
+        stroke="#A594FF" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.7"/>
+
+  <!-- Bold "L" lettermark -->
+  <text x="28" y="65"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="46"
+        font-weight="900"
+        fill="#FFFFFF"
+        letter-spacing="-2">L</text>
+
+  <!-- Small wordmark "ago" next to the L -->
+  <text x="55" y="63"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="22"
+        font-weight="600"
+        fill="#A594FF"
+        letter-spacing="0.5">ago</text>
+</svg>

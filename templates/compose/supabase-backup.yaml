@@ -1,0 +1,156 @@
+# documentation: https://github.com/corelix-io/coolify-enhanced-templates/blob/main/docker/supabase-backup/README.md
+# slogan: Best-practice PITR + logical backups for self-hosted Supabase (database, storage, keys).
+# tags: supabase,backup,postgres,pitr,disaster-recovery,wal,s3,restore
+# category: database,devops
+# logo: svgs/supabase-backup.svg
+# port: 8080
+# author: @corelix-io
+# repository: https://github.com/corelix-io/coolify-enhanced-templates
+
+# Deploy this alongside a self-hosted Supabase stack. It backs up all four
+# surfaces a plain pg_dump misses: database (logical + physical/PITR), Storage
+# objects (MinIO), the pgsodium crypto key + config, and a secrets manifest.
+#
+# NETWORK: enable "Connect to Predefined Network" and point it at your Supabase
+# resource, then set PGHOST / MINIO_ENDPOINT to the reachable hostnames of the
+# Supabase db and minio containers (defaults assume same-stack names).
+#
+# See docs/features/supabase-backup-template/ for the full deployment + restore
+# runbook and how to enable pgsodium-key capture.
+
+services:
+  # One-shot init: provisions the physical replication slot + pg_hba line that
+  # continuous WAL streaming (PITR) needs. No-op when PITR_SETUP=manual or
+  # PITR_ENABLED=false. Exits 0 so the main service can start.
+  supabase-backup-init:
+    image: ghcr.io/corelix-io/coolify-enhanced-templates/supabase-backup:15
+    command: ["setup-pitr"]
+    restart: "no"
+    exclude_from_hc: true
+    environment:
+      - PGHOST=${PGHOST:-supabase-db}
+      - PGPORT=${PGPORT:-5432}
+      - PGUSER=${PGUSER:-supabase_admin}
+      # Plain var (NOT the SERVICE_PASSWORD_* magic name, which Coolify would
+      # auto-generate). Paste your Supabase deployment's SERVICE_PASSWORD_POSTGRES.
+      - PGPASSWORD=${SUPABASE_DB_PASSWORD:?paste your Supabase SERVICE_PASSWORD_POSTGRES}
+      - PITR_ENABLED=${PITR_ENABLED:-true}
+      - PITR_SETUP=${PITR_SETUP:-auto}
+      - REPLICATION_SLOT=${REPLICATION_SLOT:-corelix_backup}
+      - REPLICATION_CIDR=${REPLICATION_CIDR:-samenet}
+      # Verbosity: 'info' (default) logs every step; 'debug' adds rclone INFO
+      # transfer logs. If the init container ever gets stuck on "connecting to
+      # database", its logs now name the failing layer (DNS/TCP/ready/auth).
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+  supabase-backup:
+    image: ghcr.io/corelix-io/coolify-enhanced-templates/supabase-backup:15
+    environment:
+      # Status page (read-only dashboard of last backup times / failures)
+      - SERVICE_FQDN_STATUS_8080
+      - STATUS_PORT=8080
+
+      # --- Source database (from your Supabase deployment) ---
+      - PGHOST=${PGHOST:-supabase-db}
+      - PGPORT=${PGPORT:-5432}
+      - PGUSER=${PGUSER:-supabase_admin}
+      # Plain var (NOT SERVICE_PASSWORD_*, which Coolify auto-generates).
+      - PGPASSWORD=${SUPABASE_DB_PASSWORD:?paste your Supabase SERVICE_PASSWORD_POSTGRES}
+      - PGDATABASE=${PGDATABASE:-postgres}
+      - BACKUP_DATABASES=${BACKUP_DATABASES:-postgres}
+
+      # --- Point-in-time recovery (Tier 2) ---
+      - PITR_ENABLED=${PITR_ENABLED:-true}
+      - PITR_SETUP=${PITR_SETUP:-auto}
+      - REPLICATION_SLOT=${REPLICATION_SLOT:-corelix_backup}
+
+      # --- Supabase Storage (MinIO object backend) ---
+      - STORAGE_ENABLED=${STORAGE_ENABLED:-true}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-http://supabase-minio:9000}
+      # Plain vars — paste your Supabase SERVICE_USER_MINIO / SERVICE_PASSWORD_MINIO.
+      - MINIO_ACCESS_KEY=${SUPABASE_MINIO_ACCESS_KEY:-}
+      - MINIO_SECRET_KEY=${SUPABASE_MINIO_SECRET_KEY:-}
+      - STORAGE_BUCKET=${STORAGE_BUCKET:-stub}
+
+      # --- Config / crypto capture (pgsodium key) ---
+      # To capture the pgsodium root key, mount the Supabase db-config volume at
+      # /dbconfig (see the commented volume block below). Without it, only the
+      # secrets manifest is written and the script warns.
+      - CONFIG_ENABLED=${CONFIG_ENABLED:-true}
+
+      # --- Backup target: ANY S3-compatible endpoint (R2, B2, Wasabi, MinIO, AWS, Scaleway) ---
+      # IMPORTANT: the endpoint must be the REGIONAL/service host WITHOUT the
+      # bucket name. Putting the bucket in the host (e.g.
+      # https://<bucket>.s3.<region>.scw.cloud) together with path-style addresses
+      # the bucket twice and breaks reads. Correct examples:
+      #   Scaleway:   https://s3.fr-par.scw.cloud
+      #   AWS:        https://s3.eu-west-1.amazonaws.com
+      #   Cloudflare: https://<account>.r2.cloudflarestorage.com
+      #   MinIO:      https://minio.example.com
+      - BACKUP_S3_ENDPOINT=${BACKUP_S3_ENDPOINT:?regional endpoint WITHOUT the bucket, e.g. https://s3.fr-par.scw.cloud}
+      - BACKUP_S3_BUCKET=${BACKUP_S3_BUCKET:?destination bucket name}
+      - BACKUP_S3_ACCESS_KEY=${BACKUP_S3_ACCESS_KEY:?}
+      - BACKUP_S3_SECRET_KEY=${BACKUP_S3_SECRET_KEY:?}
+      - BACKUP_S3_REGION=${BACKUP_S3_REGION:-us-east-1}
+      - BACKUP_S3_FORCE_PATH_STYLE=${BACKUP_S3_FORCE_PATH_STYLE:-true}
+      - BACKUP_PREFIX=${BACKUP_PREFIX:-supabase}
+
+      # --- Encryption at rest (standalone age; private key kept OFFLINE) ---
+      # Generate: age-keygen -o key.txt  -> use the "public key:" (age1...) here;
+      # keep key.txt safe for restores (BACKUP_AGE_IDENTITY_FILE).
+      - BACKUP_ENCRYPTION=${BACKUP_ENCRYPTION:-age}
+      - BACKUP_AGE_RECIPIENT=${BACKUP_AGE_RECIPIENT:?age public key (age1...) — run: age-keygen}
+
+      # --- Schedules (cron) ---
+      - SCHED_LOGICAL=${SCHED_LOGICAL:-0 */6 * * *}
+      - SCHED_BASEBACKUP=${SCHED_BASEBACKUP:-0 3 * * 0}
+      - SCHED_STORAGE=${SCHED_STORAGE:-0 4 * * *}
+      - SCHED_CONFIG=${SCHED_CONFIG:-0 4 * * *}
+      - SCHED_PRUNE=${SCHED_PRUNE:-30 5 * * *}
+      - SCHED_VERIFY=${SCHED_VERIFY:-0 5 * * 1}
+
+      # --- Retention (GFS + physical) ---
+      - RETAIN_DAILY=${RETAIN_DAILY:-7}
+      - RETAIN_WEEKLY=${RETAIN_WEEKLY:-4}
+      - RETAIN_MONTHLY=${RETAIN_MONTHLY:-6}
+      - RETAIN_BASEBACKUPS=${RETAIN_BASEBACKUPS:-4}
+
+      # --- Alerting (optional webhook on failure) ---
+      - ALERT_WEBHOOK=${ALERT_WEBHOOK:-}
+      - SOURCE_IMAGE_TAG=${SOURCE_IMAGE_TAG:-supabase/postgres:15.8.1.085}
+
+      # --- Observability ---
+      # 'info' (default) is already highly verbose (config banner, per-step logs,
+      # uploaded file names + sizes, S3 preflight). 'debug' adds rclone transfer
+      # logs. At startup the sidecar prints an effective-config banner, waits for
+      # the DB reporting DNS/TCP/ready/auth per attempt, then proves the S3 target
+      # works (connect + write + read-back + delete) BEFORE scheduling any backup.
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # A detailed RESTORE.md runbook is regenerated in the backup folder after
+      # every backup cycle (empty machine -> working Supabase). Set false to skip.
+      - RUNBOOK_ENABLED=${RUNBOOK_ENABLED:-true}
+    volumes:
+      - backup-staging:/staging
+      # To capture the pgsodium key, mount your Supabase db-config volume here.
+      # Replace <name> with the real volume name (docker volume ls | grep db-config)
+      # and declare it under the top-level `volumes:` block as external.
+      # - type: volume
+      #   source: supabase-db-config
+      #   target: /dbconfig
+      #   read_only: true
+    depends_on:
+      supabase-backup-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/scripts/entrypoint.sh", "healthcheck"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  backup-staging:
+  # supabase-db-config:
+  #   external: true
+  #   name: <your-coolify-db-config-volume-name>

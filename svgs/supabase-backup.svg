@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Supabase Backup">
+  <defs>
+    <linearGradient id="sb" x1="40" y1="30" x2="180" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3ECF8E"/>
+      <stop offset="1" stop-color="#249361"/>
+    </linearGradient>
+  </defs>
+  <!-- circular backup / restore arrows -->
+  <g fill="none" stroke="#3ECF8E" stroke-width="14" stroke-linecap="round">
+    <path d="M210 128a82 82 0 0 1-140 58"/>
+    <path d="M46 128a82 82 0 0 1 140-58"/>
+  </g>
+  <path d="M186 44l6 30-30 4z" fill="#3ECF8E"/>
+  <path d="M70 212l-6-30 30-4z" fill="#3ECF8E"/>
+  <!-- Supabase lightning mark -->
+  <path d="M133 58c2-4 8-2 8 3v48h34c6 0 9 7 5 12l-58 77c-3 4-9 1-8-4l0-48H86c-6 0-9-7-5-12z" fill="url(#sb)"/>
+</svg>

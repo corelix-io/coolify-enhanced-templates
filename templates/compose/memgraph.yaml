@@ -1,0 +1,84 @@
+# documentation: https://memgraph.com/docs/getting-started/install-memgraph/docker-compose
+# slogan: Open-source graph database built for real-time streaming and fast analysis with Cypher.
+# tags: database,graph,graph-database,cypher,memgraph,analytics,mage
+# type: database
+# logo: svgs/memgraph.svg
+# port: 3000
+# author: @corelix-io
+# repository: https://github.com/corelix-io/coolify-enhanced-templates
+
+services:
+  memgraph:
+    image: memgraph/memgraph-mage:latest
+    restart: always
+    labels:
+      coolify.database: "true"
+      coolify.proxyPorts: "7687:bolt,7444:log-viewer"
+    expose:
+      - "7687"
+      - "7444"
+    volumes:
+      - mg_lib:/var/lib/memgraph
+      - mg_log:/var/log/memgraph
+      - mg_etc:/etc/memgraph
+    environment:
+      - MEMGRAPH_USER=$SERVICE_USER_MEMGRAPH
+      - MEMGRAPH_PASSWORD=$SERVICE_PASSWORD_MEMGRAPH
+    command:
+      [
+        "--log-level=${MEMGRAPH_LOG_LEVEL:-WARNING}",
+        "--also-log-to-stderr=true",
+        "--memory-limit=${MEMGRAPH_MEMORY_LIMIT:-0}",
+        "--storage-snapshot-interval-sec=${MEMGRAPH_SNAPSHOT_INTERVAL:-300}",
+        "--storage-snapshot-on-exit=true",
+        "--storage-snapshot-retention-count=${MEMGRAPH_SNAPSHOT_RETENTION:-3}",
+        "--storage-wal-enabled=true",
+        "--query-execution-timeout-sec=${MEMGRAPH_QUERY_TIMEOUT:-600}",
+        "--telemetry-enabled=${MEMGRAPH_TELEMETRY_ENABLED:-false}",
+      ]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -c '</dev/tcp/localhost/7687'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  memgraph-lab:
+    image: memgraph/lab:latest
+    restart: always
+    labels:
+      coolify.database: "false"
+    environment:
+      - SERVICE_FQDN_MEMGRAPHLAB_3000
+      # Memgraph database credentials (shown in Coolify config view).
+      # Lab does not support auto-connecting with credentials via env vars.
+      # Enter these credentials manually in Lab's connection dialog.
+      - SERVICE_USER_MEMGRAPHLAB=$SERVICE_USER_MEMGRAPH
+      - SERVICE_PASSWORD_MEMGRAPHLAB=$SERVICE_PASSWORD_MEMGRAPH
+      # Memgraph connection
+      - QUICK_CONNECT_MG_HOST=memgraph
+      - QUICK_CONNECT_MG_PORT=7687
+      - QUICK_CONNECT_MG_IS_ENCRYPTED=${MG_LAB_IS_ENCRYPTED:-false}
+      # Lab configuration
+      - LOG_LEVEL=${MG_LAB_LOG_LEVEL:-info}
+      - SESSION_MAX_AGE_SEC=${MG_LAB_SESSION_MAX_AGE:-86400}
+      - QUERY_MAX_LEN=${MG_LAB_QUERY_MAX_LEN:-5000}
+      - REQUEST_BODY_LIMIT_MB=${MG_LAB_REQUEST_BODY_LIMIT:-20}
+    depends_on:
+      memgraph:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://localhost:3000 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  mg_lib:
+  mg_log:
+  mg_etc:
